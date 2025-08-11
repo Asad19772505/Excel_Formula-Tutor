@@ -1,6 +1,6 @@
 import io
 from datetime import datetime
-from typing import List
+from typing import List, Dict
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,46 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
 st.set_page_config(page_title="Excel Elements – Function Runner", layout="wide")
-st.title("🧪 Excel Elements – Function Runner (Hardened)")
+st.title("🧪 Excel Elements – Function Runner")
+
+# --------------------------
+# Excel formula templates (for display/reference)
+# --------------------------
+EXCEL_FORMULAS: Dict[str, str] = {
+    # Basic Math
+    "SUM": "=SUM(A:A)",
+    "AVERAGE": "=AVERAGE(A:A)",
+    "MAX": "=MAX(A:A)",
+    "MIN": "=MIN(A:A)",
+    # Logical
+    "IF": '=IF(A2>0,"Yes","No")',
+    "AND": "=AND(A2>0,B2<100)",
+    "OR": "=OR(A2>0,B2<100)",
+    "NOT": "=NOT(A2>0)",
+    # Lookup & Reference
+    "VLOOKUP": "=VLOOKUP(A2, Table!A:D, 3, FALSE)",
+    "XLOOKUP": "=XLOOKUP(A2, Table!A:A, Table!C:C, \"Not Found\", 0)",
+    "MATCH": "=MATCH(\"Target\", A:A, 0)",
+    "INDEX": "=INDEX(C:C, 10)",
+    # Financial
+    "PV": "=PV(rate, nper, pmt, [fv], [type])",
+    "FV": "=FV(rate, nper, pmt, [pv], [type])",
+    "IRR": "=IRR(A1:A10)",
+    "RATE": "=RATE(nper, pmt, pv, [fv], [type], [guess])",
+    # Date & Time
+    "TODAY": "=TODAY()",
+    "WEEKDAY": "=WEEKDAY(A2, 1)   // 1: Sun=1..Sat=7",
+    "DATE": "=DATE(YearCell, MonthCell, DayCell)",
+    # Statistical
+    "STDEV": "=STDEV.S(A:A)",
+    "MEDIAN": "=MEDIAN(A:A)",
+    "VAR": "=VAR.S(A:A)",
+    # Text
+    "TEXT": '=TEXT(A2, "#,##0.00")',
+    "CONCAT": "=CONCAT(A2, \" \", B2)",
+    "TRIM": "=TRIM(A2)",
+    "UPPER": "=UPPER(A2)",
+}
 
 # --------------------------
 # Helpers
@@ -35,7 +74,7 @@ def read_uploaded(file) -> pd.DataFrame:
     return df
 
 def numeric_like_cols(df: pd.DataFrame) -> List[str]:
-    """Return columns that are numeric dtype OR can be coerced to numeric (at least 1 non-null after coercion)."""
+    """Return columns that are numeric dtype OR can be coerced to numeric (≥1 non-null after coercion)."""
     out = []
     for c in df.columns:
         s = pd.to_numeric(df[c], errors="coerce")
@@ -51,11 +90,9 @@ def date_like_cols(df: pd.DataFrame) -> List[str]:
             out.append(c)
         except Exception:
             pass
-    # de-dup preserve order
     return list(dict.fromkeys(out))
 
 def text_like_cols(df: pd.DataFrame) -> List[str]:
-    """Prefer object/string cols; if none, allow any (we’ll cast to str)."""
     obj = [c for c in df.columns if pd.api.types.is_string_dtype(df[c])]
     return obj if obj else list(df.columns)
 
@@ -128,7 +165,7 @@ df = read_uploaded(file)
 st.success(f"Loaded: **{file.name}** with **{df.shape[0]}** rows and **{df.shape[1]}** columns.")
 st.dataframe(df.head(20), use_container_width=True)
 
-# Precompute choices (robust)
+# Precompute choices
 numchoices  = numeric_like_cols(df)
 datechoices = date_like_cols(df)
 textchoices = text_like_cols(df)
@@ -148,6 +185,10 @@ groups = {
 }
 group = st.sidebar.selectbox("Category", list(groups.keys()))
 func  = st.sidebar.selectbox("Function", groups[group])
+
+# Show Excel formula template for the selected function
+st.sidebar.markdown("**Excel formula template:**")
+st.sidebar.code(EXCEL_FORMULAS.get(func, ""), language="plaintext")
 
 st.sidebar.header("3) Configure Parameters")
 
@@ -387,7 +428,6 @@ elif func in ["TEXT", "CONCAT", "TRIM", "UPPER"]:
             st.stop()
         ncol = st.sidebar.selectbox("Numeric column", numchoices)
         fmt  = st.sidebar.text_input("Excel-like format (display only)", "#,##0.00")
-        # Lightweight display formatting (approx)
         def fmt_num(x):
             try:
                 return f"{float(x):,.2f}"
@@ -425,6 +465,8 @@ elif func in ["TEXT", "CONCAT", "TRIM", "UPPER"]:
 st.subheader("Result Summary")
 if result_dict:
     result_df = pd.DataFrame(result_dict)
+    # Add the Excel formula template to the results view
+    result_df["ExcelFormulaTemplate"] = EXCEL_FORMULAS.get(func, "")
     st.dataframe(result_df, use_container_width=True)
 else:
     st.info("Configure parameters to compute a result.")
@@ -433,7 +475,35 @@ else:
 st.subheader("Derived Data Preview")
 st.dataframe(derived_df.head(50), use_container_width=True)
 
-excel_bytes = to_excel({
-    "Data": df,
-    "Derived": derived_df,
-    "Results": (pd.DataFrame(result_dict), f"Function: {func}")
+# Properly closed dict and parens
+excel_bytes = to_excel(
+    {
+        "Data": df,
+        "Derived": derived_df,
+        "Results": (result_df, f"Function: {func}"),
+    }
+)
+
+pdf_bytes = to_pdf(
+    [f"Function: {func}"] + summary_lines + [f"Rows: {len(df)}; Columns: {len(df.columns)}"]
+)
+
+col1, col2 = st.columns(2)
+with col1:
+    st.download_button(
+        "⬇️ Download Excel",
+        data=excel_bytes,
+        file_name=f"elements_result_{func.lower()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+with col2:
+    st.download_button(
+        "⬇️ Download PDF",
+        data=pdf_bytes,
+        file_name=f"elements_result_{func.lower()}.pdf",
+        mime="application/pdf",
+        use_container_width=True,
+    )
+
+st.caption("Hardened for messy headers, numeric-like detection, and safe fallbacks. Excel templates shown for quick learning.")
